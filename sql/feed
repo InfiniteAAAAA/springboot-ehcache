@@ -1,0 +1,56 @@
+WITH 
+-- 步骤1: 定义目标日期（上一个工作日）
+target_date AS (
+  SELECT 
+    MAX(to_date(cob_date, 'YYYYMMDD')) AS query_date 
+  FROM feed_om 
+  WHERE to_date(cob_date, 'YYYYMMDD') < CURRENT_DATE
+    AND EXTRACT(ISODOW FROM to_date(cob_date, 'YYYYMMDD')) < 6  -- 确保是工作日
+),
+-- 步骤2: 获取目标日期的数据并计算耗时
+target_data AS (
+  SELECT 
+    f.*,
+    (f.update_at - f.create_at) AS record_count  -- 直接相减得到时间差
+  FROM feed_om f
+  JOIN target_date t ON to_date(f.cob_date, 'YYYYMMDD') = t.query_date
+),
+-- 步骤3: 获取过去10个工作日的平均耗时
+past_dates AS (
+  SELECT DISTINCT
+    cob_date
+  FROM feed_om
+  WHERE 
+    to_date(cob_date, 'YYYYMMDD') < (SELECT query_date FROM target_date)
+    AND EXTRACT(ISODOW FROM to_date(cob_date, 'YYYYMMDD')) < 6
+  ORDER BY to_date(cob_date, 'YYYYMMDD') DESC
+  LIMIT 10
+),
+avg_data AS (
+  SELECT 
+    f.site,
+    f.data_type,
+    f.data_sub_type,
+    AVG(f.update_at - f.create_at)::BIGINT AS record_count_avg  -- 计算平均值
+  FROM feed_om f
+  JOIN past_dates p ON f.cob_date = p.cob_date
+  GROUP BY f.site, f.data_type, f.data_sub_type
+)
+-- 最终结果
+SELECT 
+  t.*,
+  a.record_count_avg,
+  CASE 
+    WHEN t.record_count >= a.record_count_avg 
+    THEN ROUND(
+           ((t.record_count - a.record_count_avg)::NUMERIC / 
+           NULLIF(a.record_count_avg, 0) * 100)::NUMERIC,
+           2
+         )
+    ELSE NULL 
+  END AS mvt_pct
+FROM target_data t
+LEFT JOIN avg_data a
+  ON t.site = a.site
+  AND t.data_type = a.data_type
+  AND t.data_sub_type = a.data_sub_type;
